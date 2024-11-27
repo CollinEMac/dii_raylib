@@ -7,6 +7,12 @@ const Player = struct {
     position: rl.Vector2,
     speed: f32,
     size: f32,
+    health: f32 = 100.0,
+    facingDx: f32 = 1.0,
+    facingDy: f32 = 0.0,
+    attackCooldown: f32 = 0.0,
+    attackRange: f32 = 40.0,
+    damage: f32 = 25.0,
     
     pub fn init() Player {
         return Player{
@@ -17,14 +23,195 @@ const Player = struct {
     }
 
     pub fn update(self: *Player) void {
-        if (rl.isKeyDown(.key_right)) self.position.x += self.speed;
-        if (rl.isKeyDown(.key_left)) self.position.x -= self.speed;
-        if (rl.isKeyDown(.key_down)) self.position.y += self.speed;
-        if (rl.isKeyDown(.key_up)) self.position.y -= self.speed;
+        var moved = false;
+        
+        // Store previous facing direction
+        var newFacingDx = self.facingDx;
+        var newFacingDy = self.facingDy;
+
+        if (rl.isKeyDown(.key_right)) {
+            self.position.x += self.speed;
+            newFacingDx = 1.0;
+            newFacingDy = 0.0;
+            moved = true;
+        }
+        if (rl.isKeyDown(.key_left)) {
+            self.position.x -= self.speed;
+            newFacingDx = -1.0;
+            newFacingDy = 0.0;
+            moved = true;
+        }
+        if (rl.isKeyDown(.key_down)) {
+            self.position.y += self.speed;
+            newFacingDx = 0.0;
+            newFacingDy = 1.0;
+            moved = true;
+        }
+        if (rl.isKeyDown(.key_up)) {
+            self.position.y -= self.speed;
+            newFacingDx = 0.0;
+            newFacingDy = -1.0;
+            moved = true;
+        }
+
+        // Update facing direction only if we moved
+        if (moved) {
+            self.facingDx = newFacingDx;
+            self.facingDy = newFacingDy;
+        }
+
+        // Update attack cooldown
+        if (self.attackCooldown > 0) {
+            self.attackCooldown -= rl.getFrameTime();
+        }
     }
 
     pub fn draw(self: Player) void {
-        rl.drawRectangleV(self.position, .{ .x = self.size, .y = self.size }, rl.Color.red);
+        const color = if (self.health > 0) rl.Color.red else rl.Color.gray;
+        
+        // Draw player body
+        rl.drawRectangleV(self.position, .{ .x = self.size, .y = self.size }, color);
+
+        // Draw direction indicator
+        const indicatorLength = self.size;
+        rl.drawLineEx(
+            .{ 
+                .x = self.position.x + self.size / 2,
+                .y = self.position.y + self.size / 2,
+            },
+            .{
+                .x = self.position.x + self.size / 2 + self.facingDx * indicatorLength,
+                .y = self.position.y + self.size / 2 + self.facingDy * indicatorLength,
+            },
+            3.0,
+            rl.Color.yellow,
+        );
+
+        // Draw health bar (offset above player)
+        const healthBarWidth = 40;
+        const healthBarHeight = 5;
+        const healthBarOffset = 15; // Increased offset
+        const healthPercentage = self.health / 100.0;
+        
+        // Draw health bar background (red)
+        rl.drawRectangle(
+            @as(i32, @intFromFloat(self.position.x)),
+            @as(i32, @intFromFloat(self.position.y - healthBarOffset)),
+            healthBarWidth,
+            healthBarHeight,
+            rl.Color.red,
+        );
+        
+        // Draw current health (green)
+        rl.drawRectangle(
+            @as(i32, @intFromFloat(self.position.x)),
+            @as(i32, @intFromFloat(self.position.y - healthBarOffset)),
+            @as(i32, @intFromFloat(healthBarWidth * healthPercentage)),
+            healthBarHeight,
+            rl.Color.green,
+        );
+    }
+
+    pub fn attack(self: *Player) bool {
+        if (self.attackCooldown <= 0) {
+            self.attackCooldown = 0.5; // Attack every 0.5 seconds
+            return true;
+        }
+        return false;
+    }
+};
+
+const Enemy = struct {
+    position: rl.Vector2,
+    speed: f32 = 2.0,
+    size: f32 = 20.0,
+    health: f32 = 50.0,
+    active: bool = true,
+    aggroRange: f32 = 200.0,
+    attackRange: f32 = 30.0,
+    damage: f32 = 10.0,
+    attackCooldown: f32 = 0.0,
+
+    pub fn init(x: f32, y: f32) Enemy {
+        return .{
+            .position = .{ .x = x, .y = y },
+        };
+    }
+
+    pub fn update(self: *Enemy, player: *Player) void {
+        if (!self.active or self.health <= 0) return;
+
+        // Update attack cooldown
+        if (self.attackCooldown > 0) {
+            self.attackCooldown -= rl.getFrameTime();
+        }
+
+        const dx = player.position.x - self.position.x;
+        const dy = player.position.y - self.position.y;
+        const distanceToPlayer = std.math.sqrt(dx * dx + dy * dy);
+
+        // Only move if player is within aggro range
+        if (distanceToPlayer <= self.aggroRange) {
+            // Normalize direction
+            const moveX = if (distanceToPlayer > 0) dx / distanceToPlayer else 0;
+            const moveY = if (distanceToPlayer > 0) dy / distanceToPlayer else 0;
+
+            // Keep minimum distance from player
+            const minDistance: f32 = self.size + player.size;
+            if (distanceToPlayer > minDistance) {
+                // Move towards player
+                self.position.x += moveX * self.speed;
+                self.position.y += moveY * self.speed;
+            } else {
+                // Push back if too close
+                self.position.x -= moveX * self.speed;
+                self.position.y -= moveY * self.speed;
+            }
+
+            // Attack player if in range
+            if (distanceToPlayer <= self.attackRange and self.attackCooldown <= 0) {
+                player.health -= self.damage;
+                self.attackCooldown = 1.0; // Attack every second
+            }
+        }
+    }
+
+    pub fn draw(self: Enemy) void {
+        if (!self.active or self.health <= 0) return;
+
+        // Draw enemy body
+        rl.drawRectangleV(self.position, .{ .x = self.size, .y = self.size }, rl.Color.purple);
+
+        // Draw health bar (offset above enemy)
+        const healthBarWidth = 40;
+        const healthBarHeight = 5;
+        const healthBarOffset = 15; // Increased offset
+        const healthPercentage = self.health / 50.0;
+        
+        // Draw health bar background (red)
+        rl.drawRectangle(
+            @as(i32, @intFromFloat(self.position.x)),
+            @as(i32, @intFromFloat(self.position.y - healthBarOffset)),
+            healthBarWidth,
+            healthBarHeight,
+            rl.Color.red,
+        );
+        
+        // Draw current health (green)
+        rl.drawRectangle(
+            @as(i32, @intFromFloat(self.position.x)),
+            @as(i32, @intFromFloat(self.position.y - healthBarOffset)),
+            @as(i32, @intFromFloat(healthBarWidth * healthPercentage)),
+            healthBarHeight,
+            rl.Color.green,
+        );
+    }
+
+    pub fn takeDamage(self: *Enemy, damage: f32) void {
+        self.health -= damage;
+        if (self.health <= 0) {
+            self.active = false;
+        }
     }
 };
 
@@ -177,6 +364,17 @@ pub fn main() anyerror!void {
     // Create dungeon layout
     const walls = createDungeon(rng);
 
+    // Create enemies
+    var enemies: [10]Enemy = undefined;
+    for (0..10) |i| {
+        const angle = @as(f32, @floatFromInt(i)) * (2 * std.math.pi / 10.0);
+        const radius = 300.0;
+        enemies[i] = Enemy.init(
+            @cos(angle) * radius,
+            @sin(angle) * radius,
+        );
+    }
+
     // Add a grid size for the floor pattern
     const gridSize: f32 = 50;
     
@@ -185,7 +383,7 @@ pub fn main() anyerror!void {
         // Update
         player.update();
         
-        // Basic collision detection
+        // Basic collision detection with walls
         for (walls) |wall| {
             if (wall.rect.width == 0 and wall.rect.height == 0) continue; // Skip empty walls
             
@@ -205,19 +403,76 @@ pub fn main() anyerror!void {
             }
         }
 
+        // Collision detection between player and enemies
+        for (&enemies) |*enemy| {
+            if (!enemy.active or enemy.health <= 0) continue;
+            
+            const dx = enemy.position.x - player.position.x;
+            const dy = enemy.position.y - player.position.y;
+            const distance = std.math.sqrt(dx * dx + dy * dy);
+            
+            // If too close, push both apart
+            const minDistance = player.size + enemy.size;
+            if (distance < minDistance) {
+                const pushDistance = (minDistance - distance) / 2;
+                const pushX = if (distance > 0) dx / distance * pushDistance else 0;
+                const pushY = if (distance > 0) dy / distance * pushDistance else 0;
+                
+                // Push enemy away
+                enemy.position.x += pushX;
+                enemy.position.y += pushY;
+                
+                // Push player away
+                player.position.x -= pushX;
+                player.position.y -= pushY;
+            }
+        }
+
         // Update camera to follow player
         camera.target = player.position;
+
+        // Update enemies
+        for (&enemies) |*enemy| {
+            enemy.update(&player);
+        }
+
+        // Handle combat
+        if (rl.isKeyPressed(.key_space)) {
+            if (player.attack()) {
+                // Check each enemy for hits within an arc in front of the player
+                for (&enemies) |*enemy| {
+                    if (!enemy.active or enemy.health <= 0) continue;
+                    
+                    const enemyDx = enemy.position.x - player.position.x;
+                    const enemyDy = enemy.position.y - player.position.y;
+                    const distanceToEnemy = std.math.sqrt(enemyDx * enemyDx + enemyDy * enemyDy);
+                    
+                    if (distanceToEnemy <= player.attackRange) {
+                        // Normalize the direction to the enemy
+                        const normEnemyDx = enemyDx / distanceToEnemy;
+                        const normEnemyDy = enemyDy / distanceToEnemy;
+                        
+                        // Calculate dot product to check if enemy is in front of attack direction
+                        const dotProduct = player.facingDx * normEnemyDx + player.facingDy * normEnemyDy;
+                        
+                        // If dot product > 0.5, enemy is within roughly 90 degree arc of attack direction
+                        if (dotProduct > 0.5) {
+                            enemy.takeDamage(player.damage);
+                        }
+                    }
+                }
+            }
+        }
 
         // Draw
         rl.beginDrawing();
         defer rl.endDrawing();
 
-        rl.clearBackground(rl.Color.black); // Changed to black for dungeon feel
+        rl.clearBackground(rl.Color.black);
         
-        // Begin camera mode
         rl.beginMode2D(camera);
         
-        // Draw floor grid (darker for dungeon atmosphere)
+        // Draw floor grid
         const startX = @as(i32, @intFromFloat(player.position.x - 1000));
         const endX = @as(i32, @intFromFloat(player.position.x + 1000));
         const startY = @as(i32, @intFromFloat(player.position.y - 1000));
@@ -243,8 +498,13 @@ pub fn main() anyerror!void {
         
         // Draw walls
         for (walls) |wall| {
-            if (wall.rect.width == 0 and wall.rect.height == 0) continue; // Skip empty walls
+            if (wall.rect.width == 0 and wall.rect.height == 0) continue;
             wall.draw();
+        }
+
+        // Draw enemies
+        for (enemies) |enemy| {
+            enemy.draw();
         }
         
         // Draw player
@@ -252,7 +512,29 @@ pub fn main() anyerror!void {
         
         rl.endMode2D();
         
-        // Draw UI (not affected by camera)
-        rl.drawText("Use arrow keys to explore the dungeon", 10, 10, 20, rl.Color.gray);
+        // Draw UI
+        rl.drawText("WASD to move, SPACE to attack", 10, 10, 20, rl.Color.gray);
+        rl.drawText(
+            "Health: ",
+            10,
+            35,
+            20,
+            rl.Color.white,
+        );
+        rl.drawRectangle(90, 35, @as(i32, @intFromFloat(player.health)), 20, rl.Color.green);
+
+        // Draw game over if player is dead
+        if (player.health <= 0) {
+            const text = "Game Over!";
+            const fontSize = 40;
+            const textWidth = rl.measureText(text, fontSize);
+            rl.drawText(
+                text,
+                @divTrunc(screenWidth - textWidth, 2),
+                @divTrunc(screenHeight - fontSize, 2),
+                fontSize,
+                rl.Color.red,
+            );
+        }
     }
 }
