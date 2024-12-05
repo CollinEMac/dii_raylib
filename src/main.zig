@@ -11,7 +11,7 @@ const Player = struct {
     facingDx: f32 = 1.0,
     facingDy: f32 = 0.0,
     attackCooldown: f32 = 0.0,
-    attackRange: f32 = 40.0,
+    attackRange: f32 = 45.0,
     damage: f32 = 25.0,
 
     pub fn init() Player {
@@ -183,10 +183,6 @@ const Enemy = struct {
 
     pub fn draw(self: Enemy) void {
         if (!self.active or self.health <= 0) return;
-
-        // Draw attack range circle for debugging
-        rl.drawCircle(@as(i32, @intFromFloat(self.position.x + self.size / 2)), @as(i32, @intFromFloat(self.position.y + self.size / 2)), self.attackRange, rl.Color{ .r = 255, .g = 0, .b = 0, .a = 64 } // Semi-transparent red
-        );
 
         // Draw enemy body
         rl.drawRectangleV(self.position, .{ .x = self.size, .y = self.size }, rl.Color.purple);
