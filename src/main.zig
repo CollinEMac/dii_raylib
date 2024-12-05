@@ -126,7 +126,7 @@ const Enemy = struct {
     speed: f32 = 2.0,
     size: f32 = 20.0,
     health: f32 = 50.0,
-    active: bool = true,
+    active: bool,
     aggroRange: f32 = 200.0,
     attackRange: f32 = 45.0, // Increased from 30 to 45 to be larger than minDistance (40)
     damage: f32 = 10.0,
@@ -135,6 +135,7 @@ const Enemy = struct {
     pub fn init(x: f32, y: f32) Enemy {
         return .{
             .position = .{ .x = x, .y = y },
+            .active = !(x == 0 and y == 0), // Only activate enemies at valid spawn points
         };
     }
 
@@ -224,6 +225,12 @@ const Enemy = struct {
     }
 };
 
+const Room = struct {
+    rect: rl.Rectangle,
+    exits: [4]bool = [_]bool{false} ** 4, // top, right, bottom, left
+    hasEnemies: bool = false,
+};
+
 const Wall = struct {
     rect: rl.Rectangle,
 
@@ -232,138 +239,210 @@ const Wall = struct {
     }
 };
 
-fn createDungeon(rng: std.rand.Random) [50]Wall {
+fn createDungeon(rng: std.rand.Random) struct { walls: [50]Wall, spawnPoint: rl.Vector2, enemySpawns: [10]rl.Vector2 } {
     var walls: [50]Wall = undefined;
     var index: usize = 0;
-
-    // Main central room with random size
-    const main_room_width = rng.float(f32) * 100.0 + 250.0; // 250-350
-    const main_room_height = rng.float(f32) * 100.0 + 250.0; // 250-350
-    const main_room_x = -main_room_width / 2.0;
-    const main_room_y = -main_room_height / 2.0;
-
-    walls[index] = .{ .rect = .{ .x = main_room_x, .y = main_room_y, .width = main_room_width, .height = 20.0 } };
-    index += 1; // Top
-    walls[index] = .{ .rect = .{ .x = main_room_x, .y = main_room_y + main_room_height - 20.0, .width = main_room_width, .height = 20.0 } };
-    index += 1; // Bottom
-    walls[index] = .{ .rect = .{ .x = main_room_x, .y = main_room_y, .width = 20.0, .height = main_room_height } };
-    index += 1; // Left
-    walls[index] = .{ .rect = .{ .x = main_room_x + main_room_width - 20.0, .y = main_room_y, .width = 20.0, .height = main_room_height } };
-    index += 1; // Right
-
-    // Random number of side rooms (2-4)
-    const num_side_rooms = rng.intRangeAtMost(usize, 2, 4);
+    var enemySpawnIndex: usize = 0;
+    var enemySpawns: [10]rl.Vector2 = undefined;
+    
+    // Create starting room (where player spawns)
+    const startRoom = Room{
+        .rect = .{
+            .x = 0,
+            .y = 0,
+            .width = 200,
+            .height = 200,
+        },
+    };
+    
+    // Create the starting room walls
+    var hasExit = [_]bool{false} ** 4;
+    
+    // Ensure at least one exit by forcing a random direction
+    const forcedExit = rng.intRangeAtMost(usize, 0, 3);
+    hasExit[forcedExit] = true;
+    
+    // Randomly add more exits
     var i: usize = 0;
-    while (i < num_side_rooms and index < 45) : (i += 1) {
-        const room_width = rng.float(f32) * 150.0 + 100.0; // 100-250
-        const room_height = rng.float(f32) * 150.0 + 100.0; // 100-250
-        const corridor_width = 80.0;
+    while (i < 4) : (i += 1) {
+        if (i != forcedExit) {
+            hasExit[i] = rng.float(f32) < 0.5;
+        }
+    }
 
-        // Choose a random side (0=right, 1=top, 2=left, 3=bottom)
-        const side = rng.intRangeAtMost(u8, 0, 3);
+    // Top wall
+    if (!hasExit[0]) { // If no top exit, create full wall
+        walls[index] = .{ .rect = .{ .x = startRoom.rect.x, .y = startRoom.rect.y, .width = startRoom.rect.width, .height = 20.0 } };
+        index += 1;
+    }
+    // Right wall
+    if (!hasExit[1]) { // If no right exit, create full wall
+        walls[index] = .{ .rect = .{ .x = startRoom.rect.x + startRoom.rect.width - 20.0, .y = startRoom.rect.y, .width = 20.0, .height = startRoom.rect.height } };
+        index += 1;
+    }
+    // Bottom wall
+    if (!hasExit[2]) { // If no bottom exit, create full wall
+        walls[index] = .{ .rect = .{ .x = startRoom.rect.x, .y = startRoom.rect.y + startRoom.rect.height - 20.0, .width = startRoom.rect.width, .height = 20.0 } };
+        index += 1;
+    }
+    // Left wall
+    if (!hasExit[3]) { // If no left exit, create full wall
+        walls[index] = .{ .rect = .{ .x = startRoom.rect.x, .y = startRoom.rect.y, .width = 20.0, .height = startRoom.rect.height } };
+        index += 1;
+    }
 
-        switch (side) {
-            0 => { // Right side
-                const room_x = main_room_x + main_room_width + corridor_width;
-                const room_y = main_room_y + rng.float(f32) * (main_room_height - room_height);
-
-                // Corridor
-                walls[index] = .{ .rect = .{ .x = main_room_x + main_room_width, .y = room_y, .width = corridor_width, .height = 20.0 } };
+    // Create exits and connected rooms based on hasExit array
+    i = 0;
+    while (i < 4) : (i += 1) {
+        if (!hasExit[i]) continue;
+        
+        switch (i) {
+            0 => { // Top
+                // Remove part of the wall for the exit
+                const exitX = startRoom.rect.x + rng.float(f32) * (startRoom.rect.width - 80.0) + 20.0;
+                walls[index] = .{ .rect = .{ .x = startRoom.rect.x, .y = startRoom.rect.y, .width = exitX - startRoom.rect.x, .height = 20.0 } };
                 index += 1;
-                walls[index] = .{ .rect = .{ .x = main_room_x + main_room_width, .y = room_y + 100.0, .width = corridor_width, .height = 20.0 } };
+                walls[index] = .{ .rect = .{ .x = exitX + 80.0, .y = startRoom.rect.y, .width = startRoom.rect.x + startRoom.rect.width - (exitX + 80.0), .height = 20.0 } };
                 index += 1;
-
-                // Room
-                walls[index] = .{ .rect = .{ .x = room_x, .y = room_y, .width = room_width, .height = 20.0 } };
+                
+                // Create corridor walls
+                const corridorY = startRoom.rect.y - 100.0;
+                walls[index] = .{ .rect = .{ .x = exitX, .y = corridorY, .width = 20.0, .height = 100.0 } }; // Left corridor wall
                 index += 1;
-                walls[index] = .{ .rect = .{ .x = room_x, .y = room_y + room_height - 20.0, .width = room_width, .height = 20.0 } };
+                walls[index] = .{ .rect = .{ .x = exitX + 80.0 - 20.0, .y = corridorY, .width = 20.0, .height = 100.0 } }; // Right corridor wall
                 index += 1;
-                walls[index] = .{ .rect = .{ .x = room_x + room_width - 20.0, .y = room_y, .width = 20.0, .height = room_height } };
+                
+                // Create new room
+                const newRoomY = startRoom.rect.y - 180.0 - 100.0;
+                // Room walls
+                walls[index] = .{ .rect = .{ .x = exitX - 20.0, .y = newRoomY, .width = 80.0 + 40.0, .height = 20.0 } }; // Top
                 index += 1;
+                walls[index] = .{ .rect = .{ .x = exitX - 20.0, .y = newRoomY, .width = 20.0, .height = 180.0 } }; // Left
+                index += 1;
+                walls[index] = .{ .rect = .{ .x = exitX + 80.0, .y = newRoomY, .width = 20.0, .height = 180.0 } }; // Right
+                index += 1;
+                
+                // Add enemy spawn point in the new room
+                if (enemySpawnIndex < enemySpawns.len) {
+                    enemySpawns[enemySpawnIndex] = .{
+                        .x = exitX + 80.0 / 2,
+                        .y = newRoomY + 180.0 / 2,
+                    };
+                    enemySpawnIndex += 1;
+                }
             },
-            1 => { // Top side
-                const room_x = main_room_x + rng.float(f32) * (main_room_width - room_width);
-                const room_y = main_room_y - room_height - corridor_width;
-
-                // Corridor
-                walls[index] = .{ .rect = .{ .x = room_x, .y = main_room_y - corridor_width, .width = 20.0, .height = corridor_width } };
+            1 => { // Right
+                const exitY = startRoom.rect.y + rng.float(f32) * (startRoom.rect.height - 80.0) + 20.0;
+                walls[index] = .{ .rect = .{ .x = startRoom.rect.x + startRoom.rect.width - 20.0, .y = startRoom.rect.y, .width = 20.0, .height = exitY - startRoom.rect.y } };
                 index += 1;
-                walls[index] = .{ .rect = .{ .x = room_x + 100.0, .y = main_room_y - corridor_width, .width = 20.0, .height = corridor_width } };
+                walls[index] = .{ .rect = .{ .x = startRoom.rect.x + startRoom.rect.width - 20.0, .y = exitY + 80.0, .width = 20.0, .height = startRoom.rect.y + startRoom.rect.height - (exitY + 80.0) } };
                 index += 1;
-
-                // Room
-                walls[index] = .{ .rect = .{ .x = room_x, .y = room_y, .width = room_width, .height = 20.0 } };
+                
+                // Create corridor walls
+                const corridorX = startRoom.rect.x + startRoom.rect.width;
+                walls[index] = .{ .rect = .{ .x = corridorX, .y = exitY, .width = 100.0, .height = 20.0 } }; // Top corridor wall
                 index += 1;
-                walls[index] = .{ .rect = .{ .x = room_x, .y = room_y, .width = 20.0, .height = room_height } };
+                walls[index] = .{ .rect = .{ .x = corridorX, .y = exitY + 80.0 - 20.0, .width = 100.0, .height = 20.0 } }; // Bottom corridor wall
                 index += 1;
-                walls[index] = .{ .rect = .{ .x = room_x + room_width - 20.0, .y = room_y, .width = 20.0, .height = room_height } };
+                
+                // Create new room
+                const newRoomX = startRoom.rect.x + startRoom.rect.width + 100.0;
+                walls[index] = .{ .rect = .{ .x = newRoomX, .y = exitY - 20.0, .width = 180.0, .height = 20.0 } }; // Top
                 index += 1;
+                walls[index] = .{ .rect = .{ .x = newRoomX, .y = exitY + 80.0, .width = 180.0, .height = 20.0 } }; // Bottom
+                index += 1;
+                walls[index] = .{ .rect = .{ .x = newRoomX + 180.0 - 20.0, .y = exitY - 20.0, .width = 20.0, .height = 80.0 + 40.0 } }; // Right
+                index += 1;
+                
+                if (enemySpawnIndex < enemySpawns.len) {
+                    enemySpawns[enemySpawnIndex] = .{
+                        .x = newRoomX + 180.0 / 2,
+                        .y = exitY + 80.0 / 2,
+                    };
+                    enemySpawnIndex += 1;
+                }
             },
-            2 => { // Left side
-                const room_x = main_room_x - room_width - corridor_width;
-                const room_y = main_room_y + rng.float(f32) * (main_room_height - room_height);
-
-                // Corridor
-                walls[index] = .{ .rect = .{ .x = room_x + room_width, .y = room_y, .width = corridor_width, .height = 20.0 } };
+            2 => { // Bottom
+                const exitX = startRoom.rect.x + rng.float(f32) * (startRoom.rect.width - 80.0) + 20.0;
+                walls[index] = .{ .rect = .{ .x = startRoom.rect.x, .y = startRoom.rect.y + startRoom.rect.height - 20.0, .width = exitX - startRoom.rect.x, .height = 20.0 } };
                 index += 1;
-                walls[index] = .{ .rect = .{ .x = room_x + room_width, .y = room_y + 100.0, .width = corridor_width, .height = 20.0 } };
+                walls[index] = .{ .rect = .{ .x = exitX + 80.0, .y = startRoom.rect.y + startRoom.rect.height - 20.0, .width = startRoom.rect.x + startRoom.rect.width - (exitX + 80.0), .height = 20.0 } };
                 index += 1;
-
-                // Room
-                walls[index] = .{ .rect = .{ .x = room_x, .y = room_y, .width = room_width, .height = 20.0 } };
+                
+                // Create corridor walls
+                const corridorY = startRoom.rect.y + startRoom.rect.height;
+                walls[index] = .{ .rect = .{ .x = exitX, .y = corridorY, .width = 20.0, .height = 100.0 } }; // Left corridor wall
                 index += 1;
-                walls[index] = .{ .rect = .{ .x = room_x, .y = room_y + room_height - 20.0, .width = room_width, .height = 20.0 } };
+                walls[index] = .{ .rect = .{ .x = exitX + 80.0 - 20.0, .y = corridorY, .width = 20.0, .height = 100.0 } }; // Right corridor wall
                 index += 1;
-                walls[index] = .{ .rect = .{ .x = room_x, .y = room_y, .width = 20.0, .height = room_height } };
+                
+                // Create new room
+                const newRoomY = startRoom.rect.y + startRoom.rect.height + 100.0;
+                walls[index] = .{ .rect = .{ .x = exitX - 20.0, .y = newRoomY + 180.0 - 20.0, .width = 80.0 + 40.0, .height = 20.0 } }; // Bottom
                 index += 1;
+                walls[index] = .{ .rect = .{ .x = exitX - 20.0, .y = newRoomY, .width = 20.0, .height = 180.0 } }; // Left
+                index += 1;
+                walls[index] = .{ .rect = .{ .x = exitX + 80.0, .y = newRoomY, .width = 20.0, .height = 180.0 } }; // Right
+                index += 1;
+                
+                if (enemySpawnIndex < enemySpawns.len) {
+                    enemySpawns[enemySpawnIndex] = .{
+                        .x = exitX + 80.0 / 2,
+                        .y = newRoomY + 180.0 / 2,
+                    };
+                    enemySpawnIndex += 1;
+                }
             },
-            3 => { // Bottom side
-                const room_x = main_room_x + rng.float(f32) * (main_room_width - room_width);
-                const room_y = main_room_y + main_room_height + corridor_width;
-
-                // Corridor
-                walls[index] = .{ .rect = .{ .x = room_x, .y = main_room_y + main_room_height, .width = 20.0, .height = corridor_width } };
+            3 => { // Left
+                const exitY = startRoom.rect.y + rng.float(f32) * (startRoom.rect.height - 80.0) + 20.0;
+                walls[index] = .{ .rect = .{ .x = startRoom.rect.x, .y = startRoom.rect.y, .width = 20.0, .height = exitY - startRoom.rect.y } };
                 index += 1;
-                walls[index] = .{ .rect = .{ .x = room_x + 100.0, .y = main_room_y + main_room_height, .width = 20.0, .height = corridor_width } };
+                walls[index] = .{ .rect = .{ .x = startRoom.rect.x, .y = exitY + 80.0, .width = 20.0, .height = startRoom.rect.y + startRoom.rect.height - (exitY + 80.0) } };
                 index += 1;
-
-                // Room
-                walls[index] = .{ .rect = .{ .x = room_x, .y = room_y + room_height - 20.0, .width = room_width, .height = 20.0 } };
+                
+                // Create corridor walls
+                const corridorX = startRoom.rect.x - 100.0;
+                walls[index] = .{ .rect = .{ .x = corridorX, .y = exitY, .width = 100.0, .height = 20.0 } }; // Top corridor wall
                 index += 1;
-                walls[index] = .{ .rect = .{ .x = room_x, .y = room_y, .width = 20.0, .height = room_height } };
+                walls[index] = .{ .rect = .{ .x = corridorX, .y = exitY + 80.0 - 20.0, .width = 100.0, .height = 20.0 } }; // Bottom corridor wall
                 index += 1;
-                walls[index] = .{ .rect = .{ .x = room_x + room_width - 20.0, .y = room_y, .width = 20.0, .height = room_height } };
+                
+                // Create new room
+                const newRoomX = startRoom.rect.x - 180.0 - 100.0;
+                walls[index] = .{ .rect = .{ .x = newRoomX, .y = exitY - 20.0, .width = 180.0, .height = 20.0 } }; // Top
                 index += 1;
+                walls[index] = .{ .rect = .{ .x = newRoomX, .y = exitY + 80.0, .width = 180.0, .height = 20.0 } }; // Bottom
+                index += 1;
+                walls[index] = .{ .rect = .{ .x = newRoomX, .y = exitY - 20.0, .width = 20.0, .height = 80.0 + 40.0 } }; // Left
+                index += 1;
+                
+                if (enemySpawnIndex < enemySpawns.len) {
+                    enemySpawns[enemySpawnIndex] = .{
+                        .x = newRoomX + 180.0 / 2,
+                        .y = exitY + 80.0 / 2,
+                    };
+                    enemySpawnIndex += 1;
+                }
             },
             else => unreachable,
         }
     }
 
-    // Add some random internal walls in the main room
-    const num_internal_walls = rng.intRangeAtMost(usize, 2, 5);
-    var j: usize = 0;
-    while (j < num_internal_walls and index < 48) : (j += 1) {
-        const wall_length = rng.float(f32) * 100.0 + 50.0;
-        const is_horizontal = rng.boolean();
-
-        if (is_horizontal) {
-            const x = main_room_x + rng.float(f32) * (main_room_width - wall_length);
-            const y = main_room_y + rng.float(f32) * main_room_height;
-            walls[index] = .{ .rect = .{ .x = x, .y = y, .width = wall_length, .height = 20.0 } };
-        } else {
-            const x = main_room_x + rng.float(f32) * main_room_width;
-            const y = main_room_y + rng.float(f32) * (main_room_height - wall_length);
-            walls[index] = .{ .rect = .{ .x = x, .y = y, .width = 20.0, .height = wall_length } };
-        }
-        index += 1;
+    // Fill remaining enemy spawn points with (0,0) if not all were used
+    while (enemySpawnIndex < enemySpawns.len) : (enemySpawnIndex += 1) {
+        enemySpawns[enemySpawnIndex] = .{ .x = 0, .y = 0 };
     }
 
-    // Fill remaining slots with empty walls
+    // Fill remaining walls with empty rectangles
     while (index < walls.len) : (index += 1) {
         walls[index] = .{ .rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 } };
     }
 
-    return walls;
+    return .{
+        .walls = walls,
+        .spawnPoint = .{ .x = startRoom.rect.x + startRoom.rect.width / 2, .y = startRoom.rect.y + startRoom.rect.height / 2 },
+        .enemySpawns = enemySpawns,
+    };
 }
 
 pub fn main() anyerror!void {
@@ -395,21 +474,25 @@ pub fn main() anyerror!void {
     const rng = prng.random();
 
     // Create dungeon layout
-    const walls = createDungeon(rng);
+    const dungeon = createDungeon(rng);
+    const walls = dungeon.walls;
+    const spawnPoint = dungeon.spawnPoint;
+    const enemySpawns = dungeon.enemySpawns;
 
     // Create enemies
     var enemies: [10]Enemy = undefined;
     for (0..10) |i| {
-        const angle = @as(f32, @floatFromInt(i)) * (2 * std.math.pi / 10.0);
-        const radius = 300.0;
         enemies[i] = Enemy.init(
-            @cos(angle) * radius,
-            @sin(angle) * radius,
+            enemySpawns[i].x,
+            enemySpawns[i].y,
         );
     }
 
     // Add a grid size for the floor pattern
     const gridSize: f32 = 50;
+
+    // Set player spawn point
+    player.position = spawnPoint;
 
     // Main game loop
     while (!rl.windowShouldClose()) {
